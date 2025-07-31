@@ -1,1 +1,92 @@
+# ========================
+# Временные файлы и папки
+# ========================
 temp_pdfs/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+Thumbs.db
+
+# ========================
+# Переменные окружения
+# ========================
+.env
+.env.local
+.env.development
+.env.production
+.env.staging
+
+# ========================
+# Логи и трассировка
+# ========================
+logs/
+*.log
+*.log.*
+log/
+
+# ========================
+# Системные и IDE-файлы
+# ========================
+# PyCharm
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# VS Code
+.vscode/
+.history/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# macOS
+.AppleDouble
+.LSOverride
+
+# Windows
+Desktop.ini
+$RECYCLE.BIN/
+Thumbs.db
+ehthumbs_vista.db
+
+# ========================
+# Виртуальные окружения
+# ========================
+venv/
+env/
+ENV/
+.venv/
+env.bak/
+venv.bak/
+
+# ========================
+# Зависимости
+# ========================
+# requirements.txt можно оставить, но lock-файлы — нет
+poetry.lock
+Pipfile.lock
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ========================
+# Артефакты сборки
+# ========================
+build/
+dist/
+*.egg-info/
+*.egg
+*.whl
+
+# ========================
+# Локальные файлы разработки
+# ========================
+local_settings.py
+db.sqlite3
+*.swp
+*.swo
+*~
+
