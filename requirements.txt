@@ -7,5 +7,5 @@ dashscope                   # Официальная библиотека для
 unstructured[local-inference]
 PyPDF2
 python-dotenv
-huggingface-hub
+langchain-huggingface
 sentence-transformers
