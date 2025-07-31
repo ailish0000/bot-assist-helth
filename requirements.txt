@@ -3,7 +3,7 @@ langchain
 langchain-community
 langchain-pinecone
 pinecone-client
-dashscope
+dashscope                   # Официальная библиотека для Qwen
 unstructured[local-inference]
 PyPDF2
 python-dotenv
