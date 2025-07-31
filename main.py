@@ -2,8 +2,8 @@ import asyncio
 import logging
 import os
 from aiogram import Bot, Dispatcher, types, F
-from config import TELEGRAM_BOT_TOKEN, TEMP_DIR, ADMIN_UPLOAD_IDS
-from rag import qa_chain, update_knowledge_base
+from config import TELEGRAM_BOT_TOKEN, TEMP_DIR
+from rag import get_answer, update_knowledge_base
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -14,7 +14,7 @@ dp = Dispatcher()
 # Защита от дубликатов
 last_answered = {}
 
-# --- Получить ID администраторов чата ---
+# --- Получить ID админов чата ---
 async def get_chat_admin_ids(chat_id: int) -> list[int]:
     try:
         admins = await bot.get_chat_administrators(chat_id)
@@ -45,13 +45,14 @@ async def handle_group_question(message: types.Message):
     question = message.text.replace("#вопрос", "", 1).strip() or "Общий вопрос"
 
     try:
-        result = qa_chain.invoke({"query": question}, return_only_outputs=True)
-        answer = result["result"]
-        source_docs = result.get("source_documents", [])
+        # Получаем ответ
+        answer = get_answer(question)
 
-        if not source_docs or not any(doc.page_content.strip() for doc in source_docs):
+        # Если бот "затрудняется" — считаем, что контекста нет
+        if "затрудняюсь" in answer.lower():
             raise ValueError("No context")
 
+        # Форматируем ответ
         final_answer = (
             f"📘 *Ассистент нутрициолога*\n\n"
             f"{answer}\n\n"
@@ -80,7 +81,6 @@ async def handle_group_question(message: types.Message):
             f"🔹 [Перейти к сообщению](https://t.me/c/{message.chat.id}/{message.message_id})"
         )
 
-        # Только админы этого чата
         chat_admin_ids = await get_chat_admin_ids(message.chat.id)
         notified_count = 0
         for admin_id in chat_admin_ids:
@@ -101,8 +101,9 @@ async def handle_group_question(message: types.Message):
 # --- Загрузка PDF в ЛС ---
 @dp.message(F.private, F.document, F.document.mime_type == "application/pdf")
 async def handle_pdf_upload(message: types.Message):
-    # Проверка: можно загружать только определённым админам
-    upload_allowed_ids = ADMIN_UPLOAD_IDS or []  # если пусто — разрешено всем
+    upload_allowed_ids = os.getenv("ADMIN_UPLOAD_IDS", "").split(",") if os.getenv("ADMIN_UPLOAD_IDS") else []
+    upload_allowed_ids = [int(x.strip()) for x in upload_allowed_ids if x.strip().isdigit()]
+
     if upload_allowed_ids and message.from_user.id not in upload_allowed_ids:
         await message.reply("❌ У вас нет прав на загрузку PDF.")
         return
@@ -169,8 +170,4 @@ async def handle_need_help(callback: types.CallbackQuery):
 
 # --- Запуск ---
 async def main():
-    logger.info("Бот запущен. Уведомления — только админам чата.")
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    logger.info("Бот
