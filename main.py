@@ -170,4 +170,8 @@ async def handle_need_help(callback: types.CallbackQuery):
 
 # --- Запуск ---
 async def main():
-    logger.info("Бот
+    logger.info("Бот запущен. Используется Qwen через dashscope.")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
