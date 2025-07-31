@@ -1,0 +1,11 @@
+aiogram==3.11.0
+langchain
+langchain-community
+langchain-pinecone
+pinecone-client
+dashscope
+unstructured[local-inference]
+PyPDF2
+python-dotenv
+huggingface-hub
+sentence-transformers
