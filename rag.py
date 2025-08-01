@@ -2,7 +2,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Qdrant
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from PyPDF2 import PdfReader
-import dashscope  # Официальная библиотека Qwen
+import dashscope
 import logging
 import os
 from qdrant_client import QdrantClient
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 dashscope.api_key = os.getenv("QWEN_API_KEY")
 
 # --- Конфигурация Qdrant ---
-QDRANT_URL = os.getenv("QDRANT_URL")  # Например: https://your-cluster.qdrant.cloud:6333
+QDRANT_URL = os.getenv("QDRANT_URL")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "nutri-knowledge")
 
@@ -42,7 +42,7 @@ except Exception as e:
     client.create_collection(
         collection_name=QDRANT_COLLECTION_NAME,
         vectors_config=models.VectorParams(
-            size=384,  # Для all-MiniLM-L6-v2
+            size=384,
             distance=models.Distance.COSINE
         )
     )
@@ -112,7 +112,6 @@ def update_knowledge_base(pdf_path: str, filename: str):
 
         # Удаляем старую версию
         logger.info(f"🗑️ Удаление старой версии {filename} из Qdrant...")
-        # Поиск по метаданным
         search_result = client.scroll(
             collection_name=QDRANT_COLLECTION_NAME,
             scroll_filter=models.Filter(
