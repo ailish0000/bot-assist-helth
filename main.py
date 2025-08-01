@@ -5,11 +5,9 @@ from aiogram import Bot, Dispatcher, types, F
 from config import TELEGRAM_BOT_TOKEN, TEMP_DIR
 from rag import get_answer, update_knowledge_base
 
-# Настройка логов
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Создаём бота
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 
@@ -33,71 +31,7 @@ def get_didnt_help_button():
         ]
     )
 
-# --- ОБРАБОТКА ЗАГРУЗКИ PDF В ЛС ---
-@dp.message(F.private, F.document)
-async def handle_pdf_upload(message: types.Message):
-    # Логируем получение файла
-    logger.info(
-        f"📩 Получен документ: {message.document.file_name}, "
-        f"MIME: {message.document.mime_type}, "
-        f"Размер: {message.document.file_size} байт"
-    )
-
-    # Проверка, что это PDF
-    if message.document.mime_type != "application/pdf":
-        await message.reply("❌ Я принимаю только PDF-файлы.")
-        logger.warning("Файл не PDF")
-        return
-
-    # Проверка размера (макс. 10 МБ)
-    MAX_SIZE = 10 * 1024 * 1024  # 10 МБ
-    if message.document.file_size > MAX_SIZE:
-        await message.reply("❌ Файл слишком большой. Максимум — 10 МБ.")
-        logger.warning(f"Файл слишком большой: {message.document.file_size} байт")
-        return
-
-    # Проверка прав админа
-    upload_allowed_ids = os.getenv("ADMIN_UPLOAD_IDS", "").split(",")
-    upload_allowed_ids = [int(x.strip()) for x in upload_allowed_ids if x.strip().isdigit()]
-
-    if upload_allowed_ids and message.from_user.id not in upload_allowed_ids:
-        await message.reply("❌ У вас нет прав на загрузку PDF.")
-        logger.warning(f"Нет прав: {message.from_user.id}")
-        return
-
-    # Подготовка к скачиванию
-    file_name = message.document.file_name
-    file_info = await bot.get_file(message.document.file_id)
-    pdf_path = os.path.join(TEMP_DIR, file_name)
-
-    try:
-        # Скачиваем файл
-        await bot.download_file(file_info.file_path, pdf_path)
-        logger.info(f"✅ Файл скачан: {pdf_path}")
-
-        # Обновляем базу знаний
-        update_knowledge_base(pdf_path, file_name)
-
-        # Успешный ответ
-        await message.reply(
-            f"✅ Файл *{file_name}* успешно обновлён в базе знаний.\n"
-            f"Старая версия заменена.\n"
-            f"_База знаний актуальна._",
-            parse_mode="Markdown"
-        )
-        logger.info(f"✅ PDF '{file_name}' успешно обработан и добавлен в Pinecone")
-
-    except Exception as e:
-        logger.error(f"❌ Ошибка при обработке PDF: {e}", exc_info=True)
-        await message.reply(f"❌ Ошибка при обработке файла: {str(e)[:500]}")
-
-    finally:
-        # Удаляем временный файл
-        if os.path.exists(pdf_path):
-            os.remove(pdf_path)
-            logger.info(f"🗑️ Временный файл удалён: {pdf_path}")
-
-# --- ОБРАБОТКА #вопрос В ГРУППАХ ---
+# --- Обработка #вопрос ---
 @dp.message(F.chat.type.in_(["group", "supergroup"]))
 async def handle_group_question(message: types.Message):
     if not message.text or "#вопрос" not in message.text.lower():
@@ -164,7 +98,55 @@ async def handle_group_question(message: types.Message):
             reply_to_message_id=message.message_id
         )
 
-# --- ОБРАБОТКА КНОПКИ "НЕ ПОМОГЛО" ---
+# --- Загрузка PDF в ЛС ---
+@dp.message(F.private, F.document)
+async def handle_pdf_upload(message: types.Message):
+    # Логируем получение файла
+    logger.info(
+        f"📩 Получен документ: {message.document.file_name}, "
+        f"MIME: {message.document.mime_type}, "
+        f"Размер: {message.document.file_size} байт"
+    )
+
+    # Проверка: это PDF?
+    if not message.document.file_name.lower().endswith(".pdf"):
+        await message.reply("❌ Я принимаю только PDF-файлы.")
+        return
+
+    # Проверка размера (до 10 МБ)
+    if message.document.file_size > 10 * 1024 * 1024:
+        await message.reply("❌ Файл слишком большой. Максимум — 10 МБ.")
+        return
+
+    # Проверка прав
+    upload_allowed_ids = os.getenv("ADMIN_UPLOAD_IDS", "").split(",")
+    upload_allowed_ids = [int(x.strip()) for x in upload_allowed_ids if x.strip().isdigit()]
+
+    if upload_allowed_ids and message.from_user.id not in upload_allowed_ids:
+        await message.reply("❌ У вас нет прав на загрузку PDF.")
+        return
+
+    # Обработка PDF
+    file_name = message.document.file_name
+    file_info = await bot.get_file(message.document.file_id)
+    pdf_path = os.path.join(TEMP_DIR, file_name)
+
+    try:
+        await bot.download_file(file_info.file_path, pdf_path)
+        update_knowledge_base(pdf_path, file_name)
+        await message.reply(
+            f"✅ Файл *{file_name}* успешно обновлён в базе знаний.\n"
+            f"_База знаний актуальна._",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"❌ Ошибка при загрузке PDF: {e}")
+        await message.reply(f"❌ Ошибка: {str(e)[:500]}")
+    finally:
+        if os.path.exists(pdf_path):
+            os.remove(pdf_path)
+
+# --- Кнопка "Не помогло" ---
 @dp.callback_query(F.data == "need_help")
 async def handle_need_help(callback: types.CallbackQuery):
     try:
@@ -204,7 +186,7 @@ async def handle_need_help(callback: types.CallbackQuery):
         logger.error(f"Ошибка в 'need_help': {e}")
         await callback.answer("Не удалось отправить уведомление.", show_alert=True)
 
-# --- ЗАПУСК БОТА ---
+# --- Запуск ---
 async def main():
     logger.info("Бот запущен. Используется Qwen через dashscope.")
     await dp.start_polling(bot)
