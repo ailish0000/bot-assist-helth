@@ -1,10 +1,12 @@
-from langchain_pinecone import PineconeVectorStore
 from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.vectorstores import Qdrant
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from PyPDF2 import PdfReader
 import dashscope  # Официальная библиотека Qwen
 import logging
 import os
+from qdrant_client import QdrantClient
+from qdrant_client.http import models
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -12,20 +14,52 @@ logger = logging.getLogger(__name__)
 # Устанавливаем API-ключ Qwen
 dashscope.api_key = os.getenv("QWEN_API_KEY")
 
-# Эмбеддинги
+# --- Конфигурация Qdrant ---
+QDRANT_URL = os.getenv("QDRANT_URL")  # Например: https://your-cluster.qdrant.cloud:6333
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
+QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "nutri-knowledge")
+
+if not QDRANT_URL or not QDRANT_API_KEY:
+    logger.error("❗ Не заданы QDRANT_URL или QDRANT_API_KEY")
+    raise ValueError("Qdrant: URL и API-ключ обязательны")
+
+# --- Эмбеддинги ---
 embeddings = HuggingFaceEmbeddings(model_name=os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"))
 
-# Векторная база
-vectorstore = PineconeVectorStore(
-    index_name=os.getenv("PINECONE_INDEX_NAME", "nutri-knowledge"),
-    embedding=embeddings
+# --- Клиент Qdrant ---
+client = QdrantClient(
+    url=QDRANT_URL,
+    api_key=QDRANT_API_KEY,
+    timeout=30
+)
+
+# --- Проверка/создание коллекции ---
+try:
+    client.get_collection(QDRANT_COLLECTION_NAME)
+    logger.info(f"✅ Коллекция '{QDRANT_COLLECTION_NAME}' уже существует")
+except Exception as e:
+    logger.info(f"🛠️ Создаю коллекцию '{QDRANT_COLLECTION_NAME}'...")
+    client.create_collection(
+        collection_name=QDRANT_COLLECTION_NAME,
+        vectors_config=models.VectorParams(
+            size=384,  # Для all-MiniLM-L6-v2
+            distance=models.Distance.COSINE
+        )
+    )
+    logger.info(f"✅ Коллекция '{QDRANT_COLLECTION_NAME}' создана")
+
+# --- Векторное хранилище ---
+vectorstore = Qdrant(
+    client=client,
+    collection_name=QDRANT_COLLECTION_NAME,
+    embeddings=embeddings
 )
 
 # --- Функция: вызов Qwen ---
 def call_qwen(prompt: str) -> str:
     try:
         response = dashscope.Generation.call(
-            model="qwen-max",  # можно заменить на qwen-turbo
+            model="qwen-max",
             prompt=prompt,
             max_tokens=512,
             temperature=0.5
@@ -77,9 +111,30 @@ def update_knowledge_base(pdf_path: str, filename: str):
         logger.info(f"🔄 Начало обработки PDF: {filename}")
 
         # Удаляем старую версию
-        logger.info(f"🗑️ Удаление старой версии {filename}...")
-        vectorstore.delete(filter={"source": filename})
-        logger.info("✅ Старая версия удалена")
+        logger.info(f"🗑️ Удаление старой версии {filename} из Qdrant...")
+        # Поиск по метаданным
+        search_result = client.scroll(
+            collection_name=QDRANT_COLLECTION_NAME,
+            scroll_filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="source",
+                        match=models.MatchValue(value=filename)
+                    )
+                ]
+            ),
+            limit=1000
+        )
+        points = search_result[0]
+        if points:
+            point_ids = [point.id for point in points]
+            client.delete(
+                collection_name=QDRANT_COLLECTION_NAME,
+                points_selector=models.PointIdsList(points=point_ids)
+            )
+            logger.info(f"✅ Удалено {len(point_ids)} векторов для {filename}")
+        else:
+            logger.info(f"ℹ️ Файл {filename} не найден в базе — пропускаем удаление")
 
         # Читаем PDF
         reader = PdfReader(pdf_path)
@@ -108,10 +163,10 @@ def update_knowledge_base(pdf_path: str, filename: str):
             for chunk in chunks
         ]
 
-        # Добавляем в Pinecone
-        logger.info("📤 Попытка добавить векторы в Pinecone...")
+        # Добавляем в Qdrant
+        logger.info("📤 Добавляю векторы в Qdrant...")
         vectorstore.add_documents(docs)
-        logger.info(f"✅ Успешно добавлено {len(chunks)} чанков в Pinecone")
+        logger.info(f"✅ Успешно добавлено {len(chunks)} чанков в Qdrant")
 
     except Exception as e:
         logger.error(f"❌ Ошибка при обработке PDF: {e}", exc_info=True)
