@@ -99,7 +99,7 @@ async def handle_group_question(message: types.Message):
         )
 
 # --- Загрузка PDF в ЛС ---
-@dp.message(F.private, F.document)
+@dp.message(F.document)
 async def handle_pdf_upload(message: types.Message):
     # Логируем получение файла
     logger.info(
