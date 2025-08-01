@@ -99,7 +99,7 @@ async def handle_group_question(message: types.Message):
         )
 
 # --- Загрузка PDF в ЛС ---
-@dp.message(F.document)
+@dp.message(F.private, F.document)
 async def handle_pdf_upload(message: types.Message):
     # Логируем получение файла
     logger.info(
@@ -140,7 +140,7 @@ async def handle_pdf_upload(message: types.Message):
             parse_mode="Markdown"
         )
     except Exception as e:
-        logger.error(f"❌ Ошибка при загрузке PDF: {e}")
+        logger.error(f"❌ Ошибка при загрузке PDF: {e}", exc_info=True)  # ← exc_info=True
         await message.reply(f"❌ Ошибка: {str(e)[:500]}")
     finally:
         if os.path.exists(pdf_path):
