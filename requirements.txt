@@ -1,11 +1,10 @@
 aiogram==3.11.0
 langchain
 langchain-community
-langchain-pinecone
-pinecone-client
-dashscope                   # Официальная библиотека для Qwen
-unstructured[local-inference]
-PyPDF2
-python-dotenv
 langchain-huggingface
+qdrant-client
+dashscope
+PyPDF2
+unstructured[local-inference]
+python-dotenv
 sentence-transformers
