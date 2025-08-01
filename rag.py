@@ -74,9 +74,53 @@ def get_answer(question: str) -> str:
 # --- Обновление базы знаний ---
 def update_knowledge_base(pdf_path: str, filename: str):
     try:
+        logger.info(f"🔄 Начало обработки PDF: {filename}")
+        
         # Удаляем старую версию
+        logger.info(f"🗑️ Удаление старой версии {filename} из Pinecone...")
         vectorstore.delete(filter={"source": filename})
-        logger.info(f"Удалено: {filename}")
+        logger.info("✅ Старая версия удалена")
+
+        # Читаем PDF
+        logger.info("📖 Открываем PDF...")
+        reader = PdfReader(pdf_path)
+        text = ""
+        page_count = len(reader.pages)
+        logger.info(f"Найдено страниц: {page_count}")
+
+        for i, page in enumerate(reader.pages):
+            logger.info(f"Читаю страницу {i+1}...")
+            extracted = page.extract_text()
+            if extracted:
+                text += extracted + "\n"
+            else:
+                logger.warning(f"Страница {i+1} — текст не извлечён")
+
+        if not text.strip():
+            raise ValueError("❌ PDF не содержит читаемого текста")
+
+        logger.info(f"✅ Текст извлечён. Длина: {len(text)} символов")
+
+        # Разбиваем на чанки
+        logger.info("✂️ Разбиваю на чанки...")
+        splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+        chunks = splitter.split_text(text)
+        logger.info(f"✅ Разбито на {len(chunks)} чанков")
+
+        # Подготовка документов
+        docs = [
+            {"page_content": chunk, "metadata": {"source": filename}}
+            for chunk in chunks
+        ]
+
+        # Добавляем в Pinecone
+        logger.info("📤 Добавляю векторы в Pinecone...")
+        vectorstore.add_documents(docs)
+        logger.info(f"✅ Успешно добавлено {len(chunks)} чанков в Pinecone")
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка при обработке PDF: {e}", exc_info=True)
+        raise
 
         # Читаем PDF
         reader = PdfReader(pdf_path)
