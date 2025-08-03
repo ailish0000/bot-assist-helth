@@ -90,3 +90,44 @@ db.sqlite3
 *.swo
 *~
 
+# ========================
+# Тестовые файлы и отладка
+# ========================
+# Основные тестовые файлы
+test_*.py
+*_test.py
+validate_*.py
+debug_*.py
+check_*.py
+find_*.py
+simple_*.py
+
+# Конкретные тестовые файлы
+test_fixes.py
+test_improvements.py
+test_rag_logic.py
+test_pdf_update.py
+test_fix.py
+validate_fixes.py
+validate_changes.py
+debug_pdf.py
+check_config.py
+find_problem.py
+simple_pdf_test.py
+
+# Документация для тестирования и отладки
+ИСПРАВЛЕНИЯ_БОТА.md
+ИСПРАВЛЕНИЕ_ОШИБКИ.md
+ОБНОВЛЕНИЯ_БОТА.md
+РЕШЕНИЕ_ПРОБЛЕМЫ.md
+БЫСТРЫЙ_ЗАПУСК.txt
+ЗАПУСК_БОТА.md
+
+# Служебные батники и скрипты
+install_deps.bat
+start_bot.bat
+run_*.py
+
+# Тестовые папки
+telegram-bot-test/
+

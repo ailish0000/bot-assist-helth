@@ -1,10 +1,10 @@
 import os
+from dotenv import load_dotenv
+load_dotenv()
 
 # Токены
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "nutri-knowledge")
-QWEN_API_KEY = os.getenv("QWEN_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # Временная папка
 TEMP_DIR = "temp_pdfs"

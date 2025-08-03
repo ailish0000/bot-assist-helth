@@ -23,6 +23,26 @@ async def get_chat_admin_ids(chat_id: int) -> list[int]:
         logger.error(f"Не удалось получить админов чата {chat_id}: {e}")
         return []
 
+# --- Формирование правильной ссылки на сообщение ---
+def get_message_link(chat_id: int, message_id: int) -> str:
+    """
+    Формирует правильную ссылку на сообщение в группе/супергруппе
+    """
+    try:
+        # Для супергрупп chat_id имеет формат -100xxxxxxxxx
+        # Нужно убрать префикс "-100" для ссылки
+        if str(chat_id).startswith("-100"):
+            # Супергруппа - убираем "-100"
+            clean_id = str(chat_id)[4:]  # Убираем "-100"
+            return f"https://t.me/c/{clean_id}/{message_id}"
+        else:
+            # Обычная группа - используем как есть, но убираем знак минус
+            clean_id = str(abs(chat_id))
+            return f"https://t.me/c/{clean_id}/{message_id}"
+    except Exception as e:
+        logger.error(f"Ошибка создания ссылки для чата {chat_id}: {e}")
+        return f"Чат ID: {chat_id}, Сообщение: {message_id}"
+
 # --- Кнопка "Не помогло" ---
 def get_didnt_help_button():
     return types.InlineKeyboardMarkup(
@@ -48,8 +68,15 @@ async def handle_group_question(message: types.Message):
         # Получаем ответ
         answer = get_answer(question)
 
-        # Если бот "затрудняется" — считаем, что контекста нет
-        if "затрудняюсь" in answer.lower():
+        # Проверяем ответы, указывающие на отсутствие информации
+        no_info_phrases = [
+            "затрудняюсь",
+            "в предоставленных материалах нет информации",
+            "нет информации по этому вопросу",
+            "не могу найти информацию"
+        ]
+        
+        if any(phrase in answer.lower() for phrase in no_info_phrases):
             raise ValueError("No context")
 
         # Форматируем ответ
@@ -73,12 +100,15 @@ async def handle_group_question(message: types.Message):
         user_name = message.from_user.full_name
         question_preview = (question[:150] + "...") if len(question) > 150 else question
 
+        # Формируем правильную ссылку на сообщение
+        message_link = get_message_link(message.chat.id, message.message_id)
+        
         alert_text = (
             f"🚨 *Требуется помощь*\n\n"
             f"🔹 Группа: {chat_title}\n"
             f"🔹 Студент: {user_name}\n"
             f"🔹 Вопрос: {question_preview}\n"
-            f"🔹 [Перейти к сообщению](https://t.me/c/{message.chat.id}/{message.message_id})"
+            f"🔹 [Перейти к сообщению]({message_link})"
         )
 
         chat_admin_ids = await get_chat_admin_ids(message.chat.id)
@@ -92,59 +122,59 @@ async def handle_group_question(message: types.Message):
 
         logger.info(f"Уведомлено {notified_count} админов группы {chat_title}")
 
+        # Отправляем краткое сообщение студенту
         await message.reply(
-            "Я затрудняюсь ответить на этот вопрос. "
-            "Куратор вашей группы уже уведомлён — помощь будет предоставлена.",
+            "⚠️ К сожалению, у меня нет ответа на этот вопрос. Куратор уведомлён — скоро прибудет на помощь.",
             reply_to_message_id=message.message_id
         )
 
 # --- Загрузка PDF в ЛС ---
-@dp.message(F.private, F.document)
+@dp.message(F.document)
 async def handle_pdf_upload(message: types.Message):
-    # Логируем получение файла
-    logger.info(
-        f"📩 Получен документ: {message.document.file_name}, "
-        f"MIME: {message.document.mime_type}, "
-        f"Размер: {message.document.file_size} байт"
-    )
+    logger.info("📥 handle_pdf_upload вызван")
+    logger.info(f"📩 PDF получен: {message.document.file_name}")
 
     # Проверка: это PDF?
     if not message.document.file_name.lower().endswith(".pdf"):
         await message.reply("❌ Я принимаю только PDF-файлы.")
         return
+    logger.info("✅ Расширение проверено")
 
-    # Проверка размера (до 10 МБ)
+    # Проверка размера
     if message.document.file_size > 10 * 1024 * 1024:
-        await message.reply("❌ Файл слишком большой. Максимум — 10 МБ.")
+        await message.reply("❌ Файл слишком большой.")
         return
+    logger.info("✅ Размер проверен")
 
     # Проверка прав
     upload_allowed_ids = os.getenv("ADMIN_UPLOAD_IDS", "").split(",")
     upload_allowed_ids = [int(x.strip()) for x in upload_allowed_ids if x.strip().isdigit()]
-
     if upload_allowed_ids and message.from_user.id not in upload_allowed_ids:
-        await message.reply("❌ У вас нет прав на загрузку PDF.")
+        await message.reply("❌ У вас нет прав.")
         return
+    logger.info("✅ Права проверены")
 
     # Обработка PDF
     file_name = message.document.file_name
     file_info = await bot.get_file(message.document.file_id)
     pdf_path = os.path.join(TEMP_DIR, file_name)
+    logger.info(f"📥 Скачивание файла: {file_name}")
 
     try:
         await bot.download_file(file_info.file_path, pdf_path)
+        logger.info("✅ Файл скачан")
+
         update_knowledge_base(pdf_path, file_name)
-        await message.reply(
-            f"✅ Файл *{file_name}* успешно обновлён в базе знаний.\n"
-            f"_База знаний актуальна._",
-            parse_mode="Markdown"
-        )
+        logger.info("✅ База знаний обновлена")
+
+        await message.reply("✅ Файл успешно обновлён в базе знаний.")
     except Exception as e:
-        logger.error(f"❌ Ошибка при загрузке PDF: {e}", exc_info=True)  # ← exc_info=True
-        await message.reply(f"❌ Ошибка: {str(e)[:500]}")
+        logger.error(f"❌ Ошибка: {e}", exc_info=True)
+        await message.reply(f"❌ Ошибка: {str(e)[:200]}")
     finally:
         if os.path.exists(pdf_path):
             os.remove(pdf_path)
+            logger.info("🗑️ Временный файл удалён")
 
 # --- Кнопка "Не помогло" ---
 @dp.callback_query(F.data == "need_help")
@@ -159,12 +189,16 @@ async def handle_need_help(callback: types.CallbackQuery):
             else "Неизвестно"
         )
 
+        # Формируем правильную ссылку на сообщение
+        original_message_id = callback.message.reply_to_message.message_id if callback.message.reply_to_message else callback.message.message_id
+        message_link = get_message_link(callback.message.chat.id, original_message_id)
+        
         alert_text = (
             f"🚨 *Требуется помощь!*\n\n"
             f"🔹 Группа: {chat_title}\n"
             f"🔹 Студент: {user_name}\n"
             f"🔹 Вопрос: {question_text}\n"
-            f"🔹 [Перейти к сообщению](https://t.me/c/{callback.message.chat.id}/{callback.message.message_id})"
+            f"🔹 [Перейти к сообщению]({message_link})"
         )
 
         notified_count = 0
@@ -188,8 +222,18 @@ async def handle_need_help(callback: types.CallbackQuery):
 
 # --- Запуск ---
 async def main():
-    logger.info("Бот запущен. Используется Qwen через dashscope.")
+    logger.info("Бот запущен. Используется Qwen3 Coder через OpenRouter API.")
     await dp.start_polling(bot)
+
+@dp.message()
+async def catch_all(message: types.Message):
+    logger.info(f"📩 Входящее сообщение: {message.content_type}")
+    if message.document:
+        logger.info(f"📄 Документ: {message.document.file_name}, MIME: {message.document.mime_type}")
+    if message.photo:
+        logger.info(f"🖼️ Это фото! Количество: {len(message.photo)}")
+    if message.text:
+        logger.info(f"💬 Текст: {message.text}")
 
 if __name__ == "__main__":
     asyncio.run(main())

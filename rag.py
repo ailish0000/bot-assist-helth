@@ -1,27 +1,40 @@
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Qdrant
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
 from PyPDF2 import PdfReader
-import dashscope
+import hashlib
+from openai import OpenAI
 import logging
 import os
+import time
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Устанавливаем API-ключ Qwen
-dashscope.api_key = os.getenv("QWEN_API_KEY")
-
 # --- Конфигурация Qdrant ---
 QDRANT_URL = os.getenv("QDRANT_URL")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
-QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "nutri-knowledge")
+QDRANT_COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "nutri-bot")
 
 if not QDRANT_URL or not QDRANT_API_KEY:
     logger.error("❗ Не заданы QDRANT_URL или QDRANT_API_KEY")
     raise ValueError("Qdrant: URL и API-ключ обязательны")
+
+# --- Конфигурация OpenRouter (Qwen) ---
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+if not OPENROUTER_API_KEY:
+    logger.error("❗ Не задан OPENROUTER_API_KEY")
+    raise ValueError("OpenRouter: API-ключ обязателен")
+
+# Настройка OpenAI-совместимого клиента для OpenRouter
+from openai import OpenAI
+openrouter_client = OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=OPENROUTER_API_KEY,
+)
 
 # --- Эмбеддинги ---
 embeddings = HuggingFaceEmbeddings(model_name=os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"))
@@ -48,6 +61,23 @@ except Exception as e:
     )
     logger.info(f"✅ Коллекция '{QDRANT_COLLECTION_NAME}' создана")
 
+# --- Создание индекса по полю "source" ---
+try:
+    info = client.get_collection(QDRANT_COLLECTION_NAME)
+    payload_schema = info.payload_schema
+    if "source" not in payload_schema:
+        logger.info("🛠️ Создаю индекс по полю 'source'...")
+        client.create_payload_index(
+            collection_name=QDRANT_COLLECTION_NAME,
+            field_name="source",
+            field_schema=models.PayloadSchemaType.KEYWORD
+        )
+        logger.info("✅ Индекс по полю 'source' создан")
+    else:
+        logger.info("✅ Индекс по полю 'source' уже существует")
+except Exception as e:
+    logger.warning(f"⚠️ Ошибка при создании индекса: {e}")
+
 # --- Векторное хранилище ---
 vectorstore = Qdrant(
     client=client,
@@ -55,37 +85,51 @@ vectorstore = Qdrant(
     embeddings=embeddings
 )
 
-# --- Функция: вызов Qwen ---
+
+# --- Функция: вызов Qwen через OpenRouter ---
 def call_qwen(prompt: str) -> str:
     try:
-        response = dashscope.Generation.call(
-            model="qwen-max",
-            prompt=prompt,
-            max_tokens=512,
-            temperature=0.5
+        chat_completion = openrouter_client.chat.completions.create(
+            model="qwen/qwen-2.5-coder-32b-instruct",
+            messages=[
+                {
+                    "role": "system",
+                    "content": """Ты — помощник в образовательной Telegram-группе по нутрициологии. Отвечай ТОЛЬКО на основе информации из предоставленных учебных материалов.
+
+СТРОГИЕ ПРАВИЛА:
+1. НЕ ДОДУМЫВАЙ! Если в контексте нет ответа — скажи: "В предоставленных материалах нет информации по этому вопросу."
+2. НЕ ИСПОЛЬЗУЙ АБСУРДНЫЕ ЦИФРЫ (например, "20 раз в час"). Если частота не указана — не называй число.
+3. НЕ СОВЕТУЙ ОБРАЩАТЬСЯ К НУТРИЦИОЛОГУ при инфекциях, боли, крови в моче и т.п. В таких случаях добавь: "Это требует консультации врача (уролога или терапевта)."
+4. ПИШИ НА РУССКОМ, без англицизмов (не "diagnoses", а "диагноз").
+5. БУДЬ КРАТКИМ, ТОЧНЫМ, ПРОФЕССИОНАЛЬНЫМ.
+6. Ответ должен быть основан ТОЛЬКО на предоставленном контексте.
+7. Не придумывай факты, цифры или рекомендации, которых нет в материалах."""
+                },
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            temperature=0.1,  # Низкая температура для точности
+            max_tokens=1000,
         )
-        if response.status_code == 200:
-            return response.output["text"].strip()
-        else:
-            logger.error(f"Qwen API error {response.status_code}: {response.message}")
-            return "Извините, сейчас не могу сформировать ответ."
+        return chat_completion.choices[0].message.content.strip()
     except Exception as e:
         logger.error(f"Ошибка при вызове Qwen: {e}")
-        return "Ошибка при генерации ответа."
+        return "Извините, сейчас не могу сформировать ответ."
+
 
 # --- Формирование RAG-промпта ---
 def make_rag_prompt(context: str, question: str) -> str:
     return f"""
-Вы — ассистент нутрициолога. Отвечайте кратко, вежливо и только на основе следующего контекста.
-Если ответа нет в контексте, скажите: "Я затрудняюсь ответить на этот вопрос. Куратор уже уведомлён."
-
-Контекст:
+КОНТЕКСТ ИЗ УЧЕБНЫХ МАТЕРИАЛОВ:
 {context}
 
-Вопрос: {question}
+ВОПРОС СТУДЕНТА: {question}
 
-Ответ:
+ИНСТРУКЦИЯ: Отвечай СТРОГО на основе предоставленного контекста. Если информации нет — скажи "В предоставленных материалах нет информации по этому вопросу." Не додумывай и не используй внешние знания.
 """.strip()
+
 
 # --- Основная функция получения ответа ---
 def get_answer(question: str) -> str:
@@ -93,7 +137,7 @@ def get_answer(question: str) -> str:
         # Получаем релевантные чанки
         retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
         docs = retriever.invoke(question)
-        
+
         if not docs or not any(doc.page_content.strip() for doc in docs):
             raise ValueError("No context retrieved")
 
@@ -105,13 +149,21 @@ def get_answer(question: str) -> str:
         logger.error(f"Ошибка генерации ответа: {e}")
         return "Извините, произошла ошибка при обработке запроса."
 
-# --- Обновление базы знаний ---
-def update_knowledge_base(pdf_path: str, filename: str):
-    try:
-        logger.info(f"🔄 Начало обработки PDF: {filename}")
 
-        # Удаляем старую версию
-        logger.info(f"🗑️ Удаление старой версии {filename} из Qdrant...")
+# --- Функции для хеширования PDF ---
+def calculate_pdf_hash(pdf_path: str) -> str:
+    """Вычисляет SHA-256 хеш PDF файла"""
+    try:
+        with open(pdf_path, 'rb') as f:
+            pdf_content = f.read()
+            return hashlib.sha256(pdf_content).hexdigest()
+    except Exception as e:
+        logger.error(f"Ошибка при вычислении хеша PDF: {e}")
+        return ""
+
+def get_stored_hash(filename: str) -> str:
+    """Получает сохраненный хеш файла из Qdrant"""
+    try:
         search_result = client.scroll(
             collection_name=QDRANT_COLLECTION_NAME,
             scroll_filter=models.Filter(
@@ -122,50 +174,160 @@ def update_knowledge_base(pdf_path: str, filename: str):
                     )
                 ]
             ),
-            limit=1000
+            limit=1,
+            with_payload=True
         )
         points = search_result[0]
-        if points:
-            point_ids = [point.id for point in points]
-            client.delete(
-                collection_name=QDRANT_COLLECTION_NAME,
-                points_selector=models.PointIdsList(points=point_ids)
-            )
-            logger.info(f"✅ Удалено {len(point_ids)} векторов для {filename}")
-        else:
-            logger.info(f"ℹ️ Файл {filename} не найден в базе — пропускаем удаление")
+        if points and points[0].payload:
+            return points[0].payload.get('file_hash', '')
+        return ""
+    except Exception as e:
+        logger.debug(f"Не удалось получить хеш для {filename}: {e}")
+        return ""
 
-        # Читаем PDF
+def extract_text_with_metadata(pdf_path: str, filename: str) -> list:
+    """Извлекает текст из PDF с метаданными страниц и заголовков"""
+    try:
         reader = PdfReader(pdf_path)
-        text = ""
-        for i, page in enumerate(reader.pages):
+        documents = []
+        
+        for page_num, page in enumerate(reader.pages, 1):
             extracted = page.extract_text()
-            if extracted:
-                text += extracted + "\n"
+            if extracted and extracted.strip():
+                # Пытаемся найти заголовки (простая эвристика)
+                lines = extracted.split('\n')
+                potential_title = ""
+                
+                # Ищем первую непустую строку как потенциальный заголовок
+                for line in lines[:5]:  # Смотрим только первые 5 строк
+                    clean_line = line.strip()
+                    if clean_line and len(clean_line) < 100:  # Заголовки обычно короче
+                        potential_title = clean_line
+                        break
+                
+                documents.append({
+                    'text': extracted,
+                    'metadata': {
+                        'source': filename,
+                        'page': page_num,
+                        'title': potential_title if potential_title else f"Страница {page_num}",
+                        'total_pages': len(reader.pages)
+                    }
+                })
+        
+        logger.info(f"✅ Извлечен текст из {len(documents)} страниц")
+        return documents
+        
+    except Exception as e:
+        logger.error(f"Ошибка извлечения текста с метаданными: {e}")
+        return []
+
+# --- Обновление базы знаний ---
+def update_knowledge_base(pdf_path: str, filename: str):
+    try:
+        logger.info(f"🔄 Начало обработки PDF: {filename}")
+
+        # Вычисляем хеш нового файла
+        new_hash = calculate_pdf_hash(pdf_path)
+        if not new_hash:
+            raise ValueError("Не удалось вычислить хеш PDF файла")
+        
+        logger.info(f"🔐 Хеш нового файла: {new_hash[:16]}...")
+
+        # Проверяем существующий хеш
+        stored_hash = get_stored_hash(filename)
+        if stored_hash:
+            logger.info(f"🔐 Хеш в базе: {stored_hash[:16]}...")
+            
+            if new_hash == stored_hash:
+                logger.info("✅ Файл не изменился, пропускаем обновление")
+                return  # Файл не изменился, ничего не делаем
             else:
-                logger.warning(f"Страница {i+1} — текст не извлечён")
+                logger.info("🔄 Файл изменился, обновляем...")
+        else:
+            logger.info("📝 Новый файл, добавляем в базу...")
 
-        if not text.strip():
-            raise ValueError("PDF не содержит текста")
+        # Удаляем старую версию если есть
+        if stored_hash:  # Есть старая версия
+            logger.info(f"🗑️ Удаление старой версии {filename} из Qdrant...")
+            max_retries = 3
+            deletion_successful = False
+            
+            for attempt in range(max_retries):
+                try:
+                    search_result = client.scroll(
+                        collection_name=QDRANT_COLLECTION_NAME,
+                        scroll_filter=models.Filter(
+                            must=[
+                                models.FieldCondition(
+                                    key="source",
+                                    match=models.MatchValue(value=filename)
+                                )
+                            ]
+                        ),
+                        limit=1000
+                    )
+                    points = search_result[0]
+                    if points:
+                        point_ids = [point.id for point in points]
+                        client.delete(
+                            collection_name=QDRANT_COLLECTION_NAME,
+                            points_selector=models.PointIdsList(points=point_ids)
+                        )
+                        logger.info(f"✅ Удалено {len(point_ids)} векторов для {filename}")
+                    deletion_successful = True
+                    break
+                except Exception as e:
+                    logger.warning(f"⚠️ Попытка {attempt + 1}/{max_retries} удаления неудачна: {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(1)  # Ждем секунду перед повторной попыткой
+                    
+            if not deletion_successful:
+                error_msg = f"❌ Критическая ошибка: не удалось удалить старую версию {filename} после {max_retries} попыток."
+                logger.error(error_msg)
+                raise RuntimeError(error_msg)
 
-        logger.info(f"✅ Текст извлечён. Длина: {len(text)} символов")
+        # Извлекаем текст с метаданными
+        logger.info("📄 Извлечение текста с метаданными...")
+        page_documents = extract_text_with_metadata(pdf_path, filename)
+        if not page_documents:
+            raise ValueError("PDF не содержит текста или не удалось его извлечь")
 
-        # Разбиваем на чанки
-        logger.info("✂️ Разбиваю на чанки...")
-        splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-        chunks = splitter.split_text(text)
-        logger.info(f"✅ Разбито на {len(chunks)} чанков")
+        # Улучшенное разбиение на чанки
+        logger.info("✂️ Семантическое разбиение на чанки...")
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=512,  # Увеличенный размер чанка
+            chunk_overlap=100,  # Больше перекрытие для контекста
+            length_function=len,
+            separators=["\n\n", "\n", ". ", "! ", "? ", ", ", " ", ""]
+        )
+        
+        all_docs = []
+        for page_doc in page_documents:
+            chunks = splitter.split_text(page_doc['text'])
+            
+            for i, chunk in enumerate(chunks):
+                if chunk.strip():  # Только непустые чанки
+                    # Расширенные метаданные
+                    metadata = {
+                        **page_doc['metadata'],  # Берем метаданные страницы
+                        'file_hash': new_hash,   # Добавляем хеш файла
+                        'chunk_id': i,           # Номер чанка на странице
+                        'chunk_size': len(chunk) # Размер чанка
+                    }
+                    
+                    all_docs.append(Document(
+                        page_content=chunk,
+                        metadata=metadata
+                    ))
 
-        # Подготовка документов
-        docs = [
-            {"page_content": chunk, "metadata": {"source": filename}}
-            for chunk in chunks
-        ]
+        logger.info(f"✅ Создано {len(all_docs)} чанков с метаданными")
 
         # Добавляем в Qdrant
         logger.info("📤 Добавляю векторы в Qdrant...")
-        vectorstore.add_documents(docs)
-        logger.info(f"✅ Успешно добавлено {len(chunks)} чанков в Qdrant")
+        vectorstore.add_documents(all_docs)
+        logger.info(f"✅ Успешно добавлено {len(all_docs)} чанков в Qdrant")
+        logger.info(f"🎯 Файл {filename} (хеш: {new_hash[:16]}...) успешно обработан")
 
     except Exception as e:
         logger.error(f"❌ Ошибка при обработке PDF: {e}", exc_info=True)
