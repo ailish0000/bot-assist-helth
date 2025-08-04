@@ -66,10 +66,16 @@ async def handle_group_question(message: types.Message):
 
     try:
         # Включаем эффект "печатания" в группе
-        await bot.send_chat_action(chat_id=message.chat.id, action="typing")
+        try:
+            await bot.send_chat_action(chat_id=message.chat.id, action="typing")
+            logger.info("✅ Эффект печатания включен")
+        except Exception as typing_error:
+            logger.warning(f"⚠️ Не удалось включить эффект печатания: {typing_error}")
         
-        # Получаем ответ
+        # Получаем ответ с таймаутом
+        logger.info(f"🔄 Начинаю обработку вопроса: '{question[:100]}...'")
         answer = get_answer(question)
+        logger.info(f"✅ Получен ответ от RAG, длина: {len(answer)} символов")
 
         # Проверяем ответы, указывающие на отсутствие информации
         no_info_phrases = [
@@ -86,12 +92,29 @@ async def handle_group_question(message: types.Message):
             f"Рекомендация дана на основе учебных материалов. "
             f"Ответственность за применение несёт студент._"
         )
-        await message.reply(
-            final_answer,
-            reply_markup=get_didnt_help_button(),
-            parse_mode="Markdown",
-            reply_to_message_id=message.message_id
-        )
+        
+        # Отправляем ответ
+        logger.info("📤 Отправляю ответ в группу...")
+        try:
+            await message.reply(
+                final_answer,
+                reply_markup=get_didnt_help_button(),
+                parse_mode="Markdown",
+                reply_to_message_id=message.message_id
+            )
+            logger.info("✅ Ответ успешно отправлен")
+        except Exception as send_error:
+            logger.error(f"❌ Ошибка при отправке ответа: {send_error}")
+            # Попробуем отправить без разметки
+            try:
+                await message.reply(
+                    answer,
+                    reply_to_message_id=message.message_id
+                )
+                logger.info("✅ Ответ отправлен без разметки")
+            except Exception as fallback_error:
+                logger.error(f"❌ Критическая ошибка отправки: {fallback_error}")
+                raise  # Передаем ошибку дальше
 
     except Exception as e:
         logger.warning(f"Нет данных для вопроса '{question}' в чате {message.chat.id}: {e}")
