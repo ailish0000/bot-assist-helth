@@ -65,6 +65,9 @@ async def handle_group_question(message: types.Message):
     question = message.text.replace("#вопрос", "", 1).strip() or "Общий вопрос"
 
     try:
+        # Включаем эффект "печатания" в группе
+        await bot.send_chat_action(chat_id=message.chat.id, action="typing")
+        
         # Получаем ответ
         answer = get_answer(question)
 
@@ -80,7 +83,7 @@ async def handle_group_question(message: types.Message):
         final_answer = (
             f"📘 *Ассистент нутрициолога*\n\n"
             f"{answer}\n\n"
-            f"_Это рекомендация на основе учебных материалов. "
+            f"Рекомендация дана на основе учебных материалов. "
             f"Ответственность за применение несёт студент._"
         )
         await message.reply(
@@ -151,6 +154,10 @@ async def handle_pdf_upload(message: types.Message):
         return
     logger.info("✅ Права проверены")
 
+    # Включаем эффект "печатания" и отправляем сообщение о начале обработки
+    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
+    processing_message = await message.reply("⏳ Идёт обработка файла...")
+
     # Обработка PDF
     file_name = message.document.file_name
     file_info = await bot.get_file(message.document.file_id)
@@ -164,9 +171,16 @@ async def handle_pdf_upload(message: types.Message):
         update_knowledge_base(pdf_path, file_name)
         logger.info("✅ База знаний обновлена")
 
+        # Удаляем сообщение об обработке и отправляем итоговое сообщение
+        await processing_message.delete()
         await message.reply("✅ Файл успешно обновлён в базе знаний.")
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}", exc_info=True)
+        # Удаляем сообщение об обработке и показываем ошибку
+        try:
+            await processing_message.delete()
+        except:
+            pass  # Если не удалось удалить сообщение, не критично
         await message.reply(f"❌ Ошибка: {str(e)[:200]}")
     finally:
         if os.path.exists(pdf_path):
