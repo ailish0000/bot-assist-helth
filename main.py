@@ -3,7 +3,7 @@ import logging
 import os
 from aiogram import Bot, Dispatcher, types, F
 from config import TELEGRAM_BOT_TOKEN, TEMP_DIR
-from rag import get_answer, update_knowledge_base
+from rag import get_answer, update_knowledge_base, check_services_health
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -70,10 +70,7 @@ async def handle_group_question(message: types.Message):
 
         # Проверяем ответы, указывающие на отсутствие информации
         no_info_phrases = [
-            "затрудняюсь",
-            "в предоставленных материалах нет информации",
-            "нет информации по этому вопросу",
-            "не могу найти информацию"
+            "затрудняюсь ответить"
         ]
         
         if any(phrase in answer.lower() for phrase in no_info_phrases):
@@ -222,7 +219,14 @@ async def handle_need_help(callback: types.CallbackQuery):
 
 # --- Запуск ---
 async def main():
-    logger.info("Бот запущен. Используется Qwen3 Coder через OpenRouter API.")
+    logger.info("🚀 Запуск бота...")
+    
+    # Проверяем доступность сервисов
+    if not check_services_health():
+        logger.error("❌ Не удалось подключиться к сервисам. Проверьте конфигурацию.")
+        return
+    
+    logger.info("🎉 Бот запущен. Используется Qwen через OpenRouter API.")
     await dp.start_polling(bot)
 
 @dp.message()
