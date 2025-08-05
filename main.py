@@ -17,19 +17,25 @@ last_answered = {}
 # --- Функция для периодического эффекта печатания ---
 async def keep_typing(chat_id: int, stop_event: asyncio.Event):
     """Периодически отправляет действие 'typing' пока не получит команду остановки"""
+    typing_count = 0
+    logger.info(f"🎬 Запускаю эффект печатания для чата {chat_id}")
+    
     while not stop_event.is_set():
         try:
             await bot.send_chat_action(chat_id=chat_id, action="typing")
-            logger.debug("✅ Эффект печатания отправлен")
+            typing_count += 1
+            logger.info(f"⌨️ Эффект печатания отправлен #{typing_count} для чата {chat_id}")
         except Exception as e:
-            logger.warning(f"⚠️ Не удалось отправить эффект печатания: {e}")
+            logger.error(f"❌ Ошибка отправки эффекта печатания для чата {chat_id}: {e}")
         
-        # Ждем 5 секунд или пока не получим сигнал остановки
+        # Ждем 4 секунды или пока не получим сигнал остановки
         try:
-            await asyncio.wait_for(stop_event.wait(), timeout=5.0)
+            await asyncio.wait_for(stop_event.wait(), timeout=4.0)
             break  # Если получили сигнал остановки - выходим
         except asyncio.TimeoutError:
             continue  # Таймаут - продолжаем цикл
+    
+    logger.info(f"🛑 Эффект печатания остановлен для чата {chat_id} (всего отправлено: {typing_count})")
 
 # --- Получить ID админов чата ---
 async def get_chat_admin_ids(chat_id: int) -> list[int]:
@@ -81,26 +87,56 @@ async def handle_group_question(message: types.Message):
 
     question = message.text.replace("#вопрос", "", 1).strip() or "Общий вопрос"
 
+    # Тестируем эффект печатания сразу
+    logger.info(f"🧪 Тестирую эффект печатания для чата {message.chat.id}")
     try:
-        # Запускаем периодический эффект печатания
-        stop_typing = asyncio.Event()
-        typing_task = asyncio.create_task(keep_typing(message.chat.id, stop_typing))
-        
+        await bot.send_chat_action(chat_id=message.chat.id, action="typing")
+        logger.info("✅ Тестовый эффект печатания успешно отправлен")
+    except Exception as test_error:
+        logger.error(f"❌ Тестовый эффект печатания НЕ РАБОТАЕТ: {test_error}")
+
+    # Запускаем периодический эффект печатания
+    stop_typing = asyncio.Event()
+    typing_task = None
+    
+    try:
         logger.info(f"🔄 Начинаю обработку вопроса: '{question[:100]}...'")
         
-        try:
-            # Получаем ответ с таймаутом
-            answer = get_answer(question)
-            logger.info(f"✅ Получен ответ от RAG, длина: {len(answer)} символов")
-        finally:
-            # Останавливаем эффект печатания
+        # Запускаем эффект печатания
+        typing_task = asyncio.create_task(keep_typing(message.chat.id, stop_typing))
+        logger.info("🎬 Задача эффекта печатания создана")
+        
+        # Небольшая задержка чтобы первый эффект печатания успел отправиться
+        await asyncio.sleep(0.1)
+        
+        # Получаем ответ с таймаутом
+        answer = get_answer(question)
+        logger.info(f"✅ Получен ответ от RAG, длина: {len(answer)} символов")
+        
+    except Exception as main_error:
+        logger.error(f"❌ Ошибка в основной обработке: {main_error}")
+        raise
+    finally:
+        # Останавливаем эффект печатания
+        if typing_task:
+            logger.info("🛑 Останавливаю эффект печатания...")
             stop_typing.set()
-            typing_task.cancel()
+            
+            # Ждем завершения задачи печатания
             try:
-                await typing_task
-            except asyncio.CancelledError:
-                pass
-
+                await asyncio.wait_for(typing_task, timeout=1.0)
+                logger.info("✅ Задача печатания завершена корректно")
+            except asyncio.TimeoutError:
+                logger.warning("⚠️ Таймаут ожидания завершения задачи печатания")
+                typing_task.cancel()
+                try:
+                    await typing_task
+                except asyncio.CancelledError:
+                    logger.info("✅ Задача печатания отменена")
+            except Exception as e:
+                logger.error(f"❌ Ошибка при завершении задачи печатания: {e}")
+    
+    try:
         # Проверяем ответы, указывающие на отсутствие информации
         no_info_phrases = [
             "затрудняюсь ответить"
