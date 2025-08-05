@@ -105,10 +105,11 @@ async def handle_group_question(message: types.Message):
             logger.info("✅ Ответ успешно отправлен")
         except Exception as send_error:
             logger.error(f"❌ Ошибка при отправке ответа: {send_error}")
-            # Попробуем отправить без разметки
+            # Попробуем отправить без разметки, но с кнопкой
             try:
                 await message.reply(
                     answer,
+                    reply_markup=get_didnt_help_button(),
                     reply_to_message_id=message.message_id
                 )
                 logger.info("✅ Ответ отправлен без разметки")
