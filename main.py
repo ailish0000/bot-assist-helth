@@ -14,6 +14,23 @@ dp = Dispatcher()
 # Защита от дубликатов
 last_answered = {}
 
+# --- Функция для периодического эффекта печатания ---
+async def keep_typing(chat_id: int, stop_event: asyncio.Event):
+    """Периодически отправляет действие 'typing' пока не получит команду остановки"""
+    while not stop_event.is_set():
+        try:
+            await bot.send_chat_action(chat_id=chat_id, action="typing")
+            logger.debug("✅ Эффект печатания отправлен")
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось отправить эффект печатания: {e}")
+        
+        # Ждем 5 секунд или пока не получим сигнал остановки
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=5.0)
+            break  # Если получили сигнал остановки - выходим
+        except asyncio.TimeoutError:
+            continue  # Таймаут - продолжаем цикл
+
 # --- Получить ID админов чата ---
 async def get_chat_admin_ids(chat_id: int) -> list[int]:
     try:
@@ -65,17 +82,24 @@ async def handle_group_question(message: types.Message):
     question = message.text.replace("#вопрос", "", 1).strip() or "Общий вопрос"
 
     try:
-        # Включаем эффект "печатания" в группе
-        try:
-            await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-            logger.info("✅ Эффект печатания включен")
-        except Exception as typing_error:
-            logger.warning(f"⚠️ Не удалось включить эффект печатания: {typing_error}")
+        # Запускаем периодический эффект печатания
+        stop_typing = asyncio.Event()
+        typing_task = asyncio.create_task(keep_typing(message.chat.id, stop_typing))
         
-        # Получаем ответ с таймаутом
         logger.info(f"🔄 Начинаю обработку вопроса: '{question[:100]}...'")
-        answer = get_answer(question)
-        logger.info(f"✅ Получен ответ от RAG, длина: {len(answer)} символов")
+        
+        try:
+            # Получаем ответ с таймаутом
+            answer = get_answer(question)
+            logger.info(f"✅ Получен ответ от RAG, длина: {len(answer)} символов")
+        finally:
+            # Останавливаем эффект печатания
+            stop_typing.set()
+            typing_task.cancel()
+            try:
+                await typing_task
+            except asyncio.CancelledError:
+                pass
 
         # Проверяем ответы, указывающие на отсутствие информации
         no_info_phrases = [
