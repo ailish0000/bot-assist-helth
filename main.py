@@ -1,18 +1,49 @@
 import asyncio
 import logging
 import os
+import signal
+import sys
 from aiogram import Bot, Dispatcher, types, F
 from config import TELEGRAM_BOT_TOKEN, TEMP_DIR
 from rag import get_answer, update_knowledge_base, check_services_health
 
-logging.basicConfig(level=logging.INFO)
+# Улучшенная настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
 logger = logging.getLogger(__name__)
+
+# Логируем информацию о запуске
+logger.info("="*60)
+logger.info("🚀 ЗАПУСК АССИСТЕНТА НУТРИЦИОЛОГА")
+logger.info(f"🐍 Python: {sys.version}")
+logger.info(f"📁 Рабочая директория: {os.getcwd()}")
+logger.info(f"🗂️ Временная папка: {TEMP_DIR}")
+logger.info("="*60)
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 
 # Защита от дубликатов
 last_answered = {}
+
+# Переменная для отслеживания состояния бота
+bot_running = False
+
+# Обработчик сигналов для корректного завершения
+def signal_handler(signum, frame):
+    logger.info(f"📟 Получен сигнал {signum} ({signal.Signals(signum).name})")
+    global bot_running
+    bot_running = False
+    logger.info("🛑 Инициирую корректное завершение бота...")
+
+# Регистрируем обработчики сигналов
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
 
 # --- Получить ID админов чата ---
 async def get_chat_admin_ids(chat_id: int) -> list[int]:
@@ -255,18 +286,7 @@ async def handle_need_help(callback: types.CallbackQuery):
         logger.error(f"Ошибка в 'need_help': {e}")
         await callback.answer("Не удалось отправить уведомление.", show_alert=True)
 
-# --- Запуск ---
-async def main():
-    logger.info("🚀 Запуск бота...")
-    
-    # Проверяем доступность сервисов
-    if not check_services_health():
-        logger.error("❌ Не удалось подключиться к сервисам. Проверьте конфигурацию.")
-        return
-    
-    logger.info("🎉 Бот запущен. Используется Qwen через OpenRouter API.")
-    await dp.start_polling(bot)
-
+# --- Обработчик для отладки ---
 @dp.message()
 async def catch_all(message: types.Message):
     logger.info(f"📩 Входящее сообщение: {message.content_type}")
@@ -277,5 +297,54 @@ async def catch_all(message: types.Message):
     if message.text:
         logger.info(f"💬 Текст: {message.text}")
 
+# --- Запуск ---
+async def main():
+    global bot_running
+    
+    logger.info("🔧 Проверяю конфигурацию бота...")
+    
+    # Проверяем токен бота
+    if not TELEGRAM_BOT_TOKEN:
+        logger.error("❌ TELEGRAM_BOT_TOKEN не задан!")
+        return
+    
+    logger.info("🔍 Проверяю подключение к Telegram...")
+    try:
+        me = await bot.get_me()
+        logger.info(f"✅ Подключен к Telegram: @{me.username} ({me.first_name})")
+        logger.info(f"🤖 ID бота: {me.id}")
+    except Exception as e:
+        logger.error(f"❌ Не удалось подключиться к Telegram: {e}")
+        return
+    
+    # Проверяем доступность сервисов
+    logger.info("🔍 Проверяю доступность внешних сервисов...")
+    if not check_services_health():
+        logger.error("❌ Не удалось подключиться к сервисам. Проверьте конфигурацию.")
+        logger.error("💡 Запустите: python health_check.py для детальной диагностики")
+        return
+    
+    logger.info("🎉 Все сервисы доступны!")
+    logger.info("🚀 Запускаю поллинг...")
+    
+    bot_running = True
+    
+    try:
+        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    except Exception as e:
+        logger.error(f"❌ Ошибка во время работы бота: {e}", exc_info=True)
+    finally:
+        logger.info("🛑 Завершение работы бота...")
+        await bot.session.close()
+        logger.info("✅ Бот корректно завершён")
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("👋 Получен сигнал прерывания, завершаю работу...")
+    except Exception as e:
+        logger.error(f"💥 Критическая ошибка: {e}", exc_info=True)
+        sys.exit(1)
+    
+    logger.info("👋 До свидания!")
