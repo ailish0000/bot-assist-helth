@@ -299,9 +299,23 @@ def get_answer(question: str) -> str:
     logger.info(f"🔍 Начинаю обработку вопроса: '{question[:100]}...'")
     
     try:
-        # 1. 🧠 NLP АНАЛИЗ ВОПРОСА
-        logger.info("🧠 Анализирую вопрос с помощью NLP...")
-        intent_analysis = nlp_processor.analyze_question(question)
+        # 0. 🧹 ПРЕДВАРИТЕЛЬНАЯ ОЧИСТКА ВОПРОСА СТУДЕНТА
+        logger.info("🧹 Очищаю вопрос студента от опечаток и сленга...")
+        original_question = question
+        cleaned_question = data_cleaner.clean_text(question, "Вопрос студента")
+        
+        # Логируем значительные изменения
+        if len(original_question) != len(cleaned_question):
+            reduction = len(original_question) - len(cleaned_question)
+            logger.info(f"✨ Вопрос очищен: '{original_question}' → '{cleaned_question}'")
+            logger.info(f"📝 Изменение: {len(original_question)} → {len(cleaned_question)} символов ({reduction:+d})")
+        
+        # Используем очищенный вопрос для дальнейшей обработки
+        question_to_process = cleaned_question if cleaned_question.strip() else original_question
+        
+        # 1. 🧠 NLP АНАЛИЗ ОЧИЩЕННОГО ВОПРОСА
+        logger.info("🧠 Анализирую очищенный вопрос с помощью NLP...")
+        intent_analysis = nlp_processor.analyze_question(question_to_process)
         logger.info(f"🎯 Определен тип интента: {intent_analysis.intent_type} (уверенность: {intent_analysis.confidence:.2f})")
         
         # Проверяем подключение к Qdrant
@@ -314,12 +328,12 @@ def get_answer(question: str) -> str:
             logger.error(f"❌ Ошибка подключения к Qdrant: {qdrant_error}")
             raise ValueError(f"Qdrant connection failed: {qdrant_error}")
 
-        # 2. 🔍 МНОЖЕСТВЕННЫЙ ПОИСК С NLP РАСШИРЕНИЕМ
+        # 2. 🔍 МНОЖЕСТВЕННЫЙ ПОИСК С NLP РАСШИРЕНИЕМ НА ОСНОВЕ ОЧИЩЕННОГО ВОПРОСА
         logger.info("🔍 Выполняю улучшенный поиск по векторной базе...")
         
-        # Создаем несколько вариантов поискового запроса
-        search_queries = nlp_processor.enhance_search_query(question)
-        logger.info(f"📝 Создано {len(search_queries)} вариантов поисковых запросов")
+        # Создаем несколько вариантов поискового запроса на основе очищенного вопроса
+        search_queries = nlp_processor.enhance_search_query(question_to_process)
+        logger.info(f"📝 Создано {len(search_queries)} вариантов поисковых запросов на основе очищенного вопроса")
         
         all_docs = []
         used_doc_ids = set()  # Для избежания дубликатов
@@ -370,7 +384,7 @@ def get_answer(question: str) -> str:
             logger.warning("⚠️ Не найдено релевантных документов после множественного поиска")
             
             # 3. 🎯 ИНТЕЛЛЕКТУАЛЬНЫЕ ПРЕДЛОЖЕНИЯ ПРИ ОТСУТСТВИИ КОНТЕКСТА
-            suggestions = nlp_processor.suggest_related_questions(question, [])
+            suggestions = nlp_processor.suggest_related_questions(question_to_process, [])
             suggestion_text = ""
             if suggestions:
                 suggestion_text = f"\n\n💡 Возможно, вас интересует:\n" + "\n".join(f"• {s}" for s in suggestions)
@@ -385,7 +399,12 @@ def get_answer(question: str) -> str:
         logger.info(f"📄 Контекст сформирован, длина: {len(context)} символов")
         
         # 5. 🤖 СОЗДАНИЕ ПЕРСОНАЛИЗИРОВАННОГО ПРОМПТА
-        prompt = make_rag_prompt(context, question, intent_analysis)
+        # Если вопрос был значительно изменен, показываем это в промпте
+        question_for_prompt = question_to_process
+        if original_question != cleaned_question:
+            question_for_prompt = f"{question_to_process}\n(Исходный вопрос: '{original_question}')"
+        
+        prompt = make_rag_prompt(context, question_for_prompt, intent_analysis)
         logger.info("🤖 Отправляю персонализированный запрос к Qwen...")
         
         try:
@@ -397,7 +416,7 @@ def get_answer(question: str) -> str:
         
         # 6. 🎯 ДОБАВЛЕНИЕ УМНЫХ ПРЕДЛОЖЕНИЙ К ОТВЕТУ
         if intent_analysis.confidence < 0.8:  # Если уверенность низкая
-            suggestions = nlp_processor.suggest_related_questions(question, [doc.page_content for doc in all_docs[:3]])
+            suggestions = nlp_processor.suggest_related_questions(question_to_process, [doc.page_content for doc in all_docs[:3]])
             if suggestions:
                 answer += f"\n\n💡 Также может быть полезно:\n" + "\n".join(f"• {s}" for s in suggestions)
         
