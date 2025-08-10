@@ -10,6 +10,7 @@ import os
 import time
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
+from data_cleaner import DataCleaner
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -52,6 +53,10 @@ embeddings = HuggingFaceEmbeddings(model_name=os.getenv("EMBEDDING_MODEL", "sent
 # --- NLP Процессор ---
 nlp_processor = NLPProcessor()
 logger.info("🧠 NLP Процессор инициализирован")
+
+# --- Очиститель данных ---
+data_cleaner = DataCleaner()
+logger.info("🧹 Модуль очистки данных инициализирован")
 
 # --- Клиент Qdrant ---
 client = QdrantClient(
@@ -443,10 +448,12 @@ def get_stored_hash(filename: str) -> str:
         return ""
 
 def extract_text_with_metadata(pdf_path: str, filename: str) -> list:
-    """Извлекает текст из PDF с метаданными страниц и заголовков"""
+    """Извлекает и очищает текст из PDF с метаданными страниц и заголовков"""
     try:
         reader = PdfReader(pdf_path)
         documents = []
+        
+        logger.info(f"📄 Извлечение текста из {filename} ({len(reader.pages)} страниц)...")
         
         for page_num, page in enumerate(reader.pages, 1):
             extracted = page.extract_text()
@@ -472,11 +479,28 @@ def extract_text_with_metadata(pdf_path: str, filename: str) -> list:
                     }
                 })
         
-        logger.info(f"✅ Извлечен текст из {len(documents)} страниц")
-        return documents
+        logger.info(f"✅ Извлечен сырой текст из {len(documents)} страниц")
+        
+        # 🧹 АВТОМАТИЧЕСКАЯ ОЧИСТКА ДАННЫХ
+        logger.info("🧹 Начинаю автоматическую очистку данных...")
+        
+        # Очищаем весь пакет документов
+        cleaned_documents = data_cleaner.clean_document_batch(documents)
+        
+        # Логируем результаты очистки
+        original_count = len(documents)
+        cleaned_count = len(cleaned_documents)
+        
+        if cleaned_count < original_count:
+            removed_count = original_count - cleaned_count
+            logger.info(f"🗑️ Удалено {removed_count} низкокачественных документов")
+        
+        logger.info(f"✅ Очистка завершена: {cleaned_count} качественных документов готовы к обработке")
+        
+        return cleaned_documents
         
     except Exception as e:
-        logger.error(f"Ошибка извлечения текста с метаданными: {e}")
+        logger.error(f"❌ Ошибка извлечения и очистки текста: {e}")
         return []
 
 # --- Обновление базы знаний ---
@@ -550,38 +574,57 @@ def update_knowledge_base(pdf_path: str, filename: str):
         if not page_documents:
             raise ValueError("PDF не содержит текста или не удалось его извлечь")
 
-        # Улучшенное разбиение на чанки
-        logger.info("✂️ Семантическое разбиение на чанки...")
+        # Улучшенное разбиение на чанки с дополнительной очисткой
+        logger.info("✂️ Семантическое разбиение на чанки с очисткой...")
         splitter = RecursiveCharacterTextSplitter(
-            chunk_size=800,   # Еще больше увеличиваем размер чанка для лучшего контекста
+            chunk_size=800,   # Размер чанка для лучшего контекста
             chunk_overlap=150, # Больше перекрытие для сохранения контекста между чанками
             length_function=len,
             separators=["\n\n", "\n", ". ", "! ", "? ", ", ", " ", ""]
         )
         
         all_docs = []
+        total_chunks_before_cleaning = 0
+        
         for page_doc in page_documents:
             chunks = splitter.split_text(page_doc['text'])
+            total_chunks_before_cleaning += len(chunks)
             
             for i, chunk in enumerate(chunks):
                 if chunk.strip():  # Только непустые чанки
-                    # Расширенные метаданные
-                    metadata = {
-                        **page_doc['metadata'],  # Берем метаданные страницы
-                        'file_hash': new_hash,   # Добавляем хеш файла
-                        'chunk_id': i,           # Номер чанка на странице
-                        'chunk_size': len(chunk) # Размер чанка
-                    }
+                    # 🧹 ДОПОЛНИТЕЛЬНАЯ ОЧИСТКА ЧАНКА
+                    # Применяем финальную очистку к каждому чанку
+                    cleaned_chunk = data_cleaner.clean_text(
+                        chunk, 
+                        f"{page_doc['metadata'].get('source', 'Unknown')} стр.{page_doc['metadata'].get('page', 'Unknown')} чанк {i}"
+                    )
                     
-                    all_docs.append(Document(
-                        page_content=chunk,
-                        metadata=metadata
-                    ))
+                    # Проверяем качество очищенного чанка
+                    if len(cleaned_chunk.strip()) >= 30:  # Минимальная длина для качественного чанка
+                        # Расширенные метаданные
+                        metadata = {
+                            **page_doc['metadata'],  # Берем метаданные страницы
+                            'file_hash': new_hash,   # Добавляем хеш файла
+                            'chunk_id': i,           # Номер чанка на странице
+                            'chunk_size': len(cleaned_chunk), # Размер очищенного чанка
+                            'original_chunk_size': len(chunk), # Оригинальный размер
+                            'cleaning_applied': True  # Отмечаем, что применялась очистка
+                        }
+                        
+                        all_docs.append(Document(
+                            page_content=cleaned_chunk,
+                            metadata=metadata
+                        ))
 
-        logger.info(f"✅ Создано {len(all_docs)} чанков с метаданными")
+        # Статистика очистки чанков
+        chunks_filtered = total_chunks_before_cleaning - len(all_docs)
+        if chunks_filtered > 0:
+            logger.info(f"🧹 Отфильтровано {chunks_filtered} низкокачественных чанков при разбиении")
+        
+        logger.info(f"✅ Создано {len(all_docs)} высококачественных чанков с метаданными")
 
         # Добавляем в Qdrant
-        logger.info("📤 Добавляю векторы в Qdrant...")
+        logger.info("📤 Добавляю очищенные векторы в Qdrant...")
         vectorstore.add_documents(all_docs)
         logger.info(f"✅ Успешно добавлено {len(all_docs)} чанков в Qdrant")
         logger.info(f"🎯 Файл {filename} (хеш: {new_hash[:16]}...) успешно обработан")
